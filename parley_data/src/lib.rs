@@ -3,6 +3,14 @@
 
 //! `parley_data` packages the Unicode data that Parley's text analysis and shaping pipeline needs at runtime.
 //! It exposes a locale-invariant `CompositeProps` data backed by a compact `CodePointTrie`, allowing the engine to obtain all required character properties with a single lookup.
+//! - Runtime loading of segmenter models for language-specific word/line breaking (via Parley's `SegmenterModelData`).
+//!
+//! # Pluggable segmenter models
+//!
+//! By default, Parley uses ICU4X's rule-based segmentation. This works well for most languages, but produces suboptimal results for languages like Thai, Lao, Khmer, Burmese, Chinese, and Japanese that don't use spaces between words.
+//!
+//! For better segmentation in these languages, you can load LSTM models or dictionaries at runtime.
+//! These models are included here if you want to import them directly, but if you want to reduce code size, you may want to export them from this crate at build time and load them dynamically.
 
 #![no_std]
 
@@ -158,4 +166,92 @@ impl From<Properties> for u32 {
     fn from(value: Properties) -> Self {
         value.0
     }
+}
+
+/// Bundled segmenter models for languages requiring complex word breaking.
+///
+/// These are pre-generated postcard blobs that can be loaded at runtime.
+///
+/// You can also depend on `parley_data` in your build, and export these models to files that you can ship alongside
+/// your Parley-using application and load dynamically.
+pub mod bundled_models {
+    /// Thai LSTM model for word/line segmentation.
+    pub static THAI_LSTM: &[u8] = include_bytes!(
+        "generated/segmenter_models/Thai_codepoints_exclusive_model4_heavy.postcard"
+    );
+
+    /// Lao LSTM model for word/line segmentation.
+    pub static LAO_LSTM: &[u8] = include_bytes!(
+        "generated/segmenter_models/Lao_codepoints_exclusive_model4_heavy.postcard"
+    );
+
+    /// Khmer LSTM model for word/line segmentation.
+    pub static KHMER_LSTM: &[u8] = include_bytes!(
+        "generated/segmenter_models/Khmer_codepoints_exclusive_model4_heavy.postcard"
+    );
+
+    /// Burmese LSTM model for word/line segmentation.
+    pub static BURMESE_LSTM: &[u8] = include_bytes!(
+        "generated/segmenter_models/Burmese_codepoints_exclusive_model4_heavy.postcard"
+    );
+
+    /// Chinese/Japanese dictionary for word segmentation.
+    pub static CJ_DICT: &[u8] =
+        include_bytes!("generated/segmenter_models/cjdict.postcard");
+
+    /// Thai dictionary for word segmentation.
+    pub static THAI_DICT: &[u8] =
+        include_bytes!("generated/segmenter_models/thaidict.postcard");
+
+    /// Lao dictionary for word segmentation.
+    pub static LAO_DICT: &[u8] =
+        include_bytes!("generated/segmenter_models/laodict.postcard");
+
+    /// Khmer dictionary for word segmentation.
+    pub static KHMER_DICT: &[u8] =
+        include_bytes!("generated/segmenter_models/khmerdict.postcard");
+
+    /// Burmese dictionary for word segmentation.
+    pub static BURMESE_DICT: &[u8] =
+        include_bytes!("generated/segmenter_models/burmesedict.postcard");
+
+    /// All bundled LSTM-based segmenters as (model ID, blob) pairs.
+    pub static ALL_LSTM: &[(&str, &[u8])] = &[
+        ("Thai_codepoints_exclusive_model4_heavy", THAI_LSTM),
+        ("Lao_codepoints_exclusive_model4_heavy", LAO_LSTM),
+        ("Khmer_codepoints_exclusive_model4_heavy", KHMER_LSTM),
+        ("Burmese_codepoints_exclusive_model4_heavy", BURMESE_LSTM),
+    ];
+
+    /// All bundled "preferred" segmenters (LSTM when possible, dictionary if not) as (model ID, blob) pairs.
+    pub static ALL_AUTO: &[(&str, &[u8])] = &[
+        ("cjdict", CJ_DICT),
+        ("Thai_codepoints_exclusive_model4_heavy", THAI_LSTM),
+        ("Lao_codepoints_exclusive_model4_heavy", LAO_LSTM),
+        ("Khmer_codepoints_exclusive_model4_heavy", KHMER_LSTM),
+        ("Burmese_codepoints_exclusive_model4_heavy", BURMESE_LSTM),
+    ];
+
+    /// All bundled dictionary-based segmenters as (model ID, blob) pairs.
+    pub static ALL_DICT: &[(&str, &[u8])] = &[
+        ("cjdict", CJ_DICT),
+        ("thaidict", THAI_DICT),
+        ("laodict", LAO_DICT),
+        ("khmerdict", KHMER_DICT),
+        ("burmesedict", BURMESE_DICT),
+    ];
+
+    /// All bundled segmenters, LSTM and dictionary, as (model ID, blob) pairs. Note that you cannot load both LSTM and
+    /// dictionary segmenters for the same locale at runtime.
+    pub static ALL: &[(&str, &[u8])] = &[
+        ("Thai_codepoints_exclusive_model4_heavy", THAI_LSTM),
+        ("Lao_codepoints_exclusive_model4_heavy", LAO_LSTM),
+        ("Khmer_codepoints_exclusive_model4_heavy", KHMER_LSTM),
+        ("Burmese_codepoints_exclusive_model4_heavy", BURMESE_LSTM),
+        ("cjdict", CJ_DICT),
+        ("thaidict", THAI_DICT),
+        ("laodict", LAO_DICT),
+        ("khmerdict", KHMER_DICT),
+        ("burmesedict", BURMESE_DICT),
+    ];
 }

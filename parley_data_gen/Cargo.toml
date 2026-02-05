@@ -13,6 +13,9 @@ databake = { workspace = true }
 icu_codepointtrie_builder = { workspace = true, features = ["wasm"] }
 icu_collections = { workspace = true, features = ["databake"] }
 icu_properties = { workspace = true, features = ["compiled_data"] }
+icu_provider_export = { workspace = true, features = ["baked_exporter", "blob_exporter"] }
+icu_provider_source = { workspace = true, features = ["networking"] }
+icu_segmenter = { workspace = true, features = ["compiled_data"] }
 parley_data = { workspace = true }
 
 [lints]

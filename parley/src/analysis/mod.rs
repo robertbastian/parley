@@ -17,18 +17,180 @@ use icu_properties::props::{BidiMirroringGlyph, GeneralCategory, GraphemeCluster
 use icu_properties::{
     CodePointMapData, CodePointMapDataBorrowed, PropertyNamesShort, PropertyNamesShortBorrowed,
 };
-use icu_segmenter::options::{LineBreakOptions, LineBreakWordOption, WordBreakInvariantOptions};
+use icu_segmenter::options::{
+    LineBreakOptions, LineBreakWordOption, WordBreakInvariantOptions, WordBreakOptions,
+};
 use icu_segmenter::{
     GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed, LineSegmenter,
     LineSegmenterBorrowed, WordSegmenter, WordSegmenterBorrowed,
 };
 use parley_data::Properties;
 
-pub(crate) struct AnalysisDataSources;
+/// Segmenter model data that can be loaded at runtime.
+///
+/// This type wraps binary blob data containing LSTM models or dictionaries for language-specific word/line
+/// segmentation. The blobs are exported from `parley_data`, and can be included at compile time or saved as files from
+/// `parley_data` at build time and later loaded as files at runtime.
+///
+/// # Example
+///
+/// ```ignore
+/// use parley_data::SegmenterModelData;
+///
+/// // Load from a file
+/// let blob = std::fs::read("Thai_codepoints_exclusive_model4_heavy.postcard")?;
+/// let model = SegmenterModelData::from_blob(blob.into_boxed_slice())?;
+///
+/// // Or embed at compile time
+/// let model = SegmenterModelData::from_static(parley_data::bundled_models::THAI_LSTM)?;
+/// ```
+#[cfg(feature = "runtime-segmenter-data")]
+#[derive(Debug)]
+pub struct SegmenterModelData {
+    pub(crate) provider: icu_provider_blob::BlobDataProvider,
+}
+
+#[cfg(feature = "runtime-segmenter-data")]
+impl SegmenterModelData {
+    /// Creates a new `SegmenterModelData` from an owned blob.
+    ///
+    /// The blob should be a postcard-serialized ICU4X data blob from `parley_data`.
+    pub fn from_blob(blob: alloc::boxed::Box<[u8]>) -> Result<Self, icu_provider::DataError> {
+        let provider = icu_provider_blob::BlobDataProvider::try_new_from_blob(blob)?;
+        Ok(Self { provider })
+    }
+
+    /// Creates a new `SegmenterModelData` from a static byte slice.
+    ///
+    /// This is useful for embedding model data directly in your binary using `include_bytes!()`.
+    pub fn from_static(blob: &'static [u8]) -> Result<Self, icu_provider::DataError> {
+        let provider = icu_provider_blob::BlobDataProvider::try_new_from_static_blob(blob)?;
+        Ok(Self { provider })
+    }
+}
+
+#[allow(unused)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SegmenterMode {
+    /// Use LSTM for SE Asian scripts, dictionary for CJK (default).
+    Auto,
+    /// Use dictionary for all complex scripts.
+    Dictionary,
+}
+
+pub(crate) struct AnalysisDataSources {
+    word_segmenter: WordSegmenter,
+    line_segmenter_normal: LineSegmenter,
+    line_segmenter_keep_all: LineSegmenter,
+    line_segmenter_break_all: LineSegmenter,
+}
+
+fn to_line_break_opts(wb: WordBreak) -> LineBreakOptions<'static> {
+    let mut line_break_opts = LineBreakOptions::default();
+    line_break_opts.word_option = Some(match wb {
+        WordBreak::Normal => LineBreakWordOption::Normal,
+        WordBreak::BreakAll => LineBreakWordOption::BreakAll,
+        WordBreak::KeepAll => LineBreakWordOption::KeepAll,
+    });
+    line_break_opts
+}
 
 impl AnalysisDataSources {
     pub(crate) fn new() -> Self {
-        Self
+        Self {
+            word_segmenter: WordSegmenter::new_for_non_complex_scripts(
+                WordBreakInvariantOptions::default(),
+            )
+            .static_to_owned(),
+            line_segmenter_normal: LineSegmenter::new_for_non_complex_scripts(to_line_break_opts(
+                WordBreak::Normal,
+            ))
+            .static_to_owned(),
+            line_segmenter_break_all: LineSegmenter::new_for_non_complex_scripts(
+                to_line_break_opts(WordBreak::BreakAll),
+            )
+            .static_to_owned(),
+            line_segmenter_keep_all: LineSegmenter::new_for_non_complex_scripts(
+                to_line_break_opts(WordBreak::KeepAll),
+            )
+            .static_to_owned(),
+        }
+    }
+
+    #[cfg(feature = "runtime-segmenter-data")]
+    pub(crate) fn load_segmenter_models(
+        &mut self,
+        models: impl IntoIterator<Item = SegmenterModelData>,
+        mode: SegmenterMode,
+    ) -> Result<(), icu_provider::DataError> {
+        // Create a forking buffer provider that combines all blob providers.
+        self.reinitialize_segmenters(
+            icu_provider_adapters::fork::MultiForkByErrorProvider::new_with_predicate(
+                models.into_iter().map(|p| p.provider).collect(),
+                icu_provider_adapters::fork::predicates::IdentifierNotFoundPredicate,
+            ),
+            mode,
+        )
+    }
+
+    #[cfg(feature = "runtime-segmenter-data")]
+    fn reinitialize_segmenters(
+        &mut self,
+        provider: icu_provider_adapters::fork::MultiForkByErrorProvider<
+            icu_provider_blob::BlobDataProvider,
+            icu_provider_adapters::fork::predicates::IdentifierNotFoundPredicate,
+        >,
+        mode: SegmenterMode,
+    ) -> Result<(), icu_provider::DataError> {
+        use icu_provider::buf::AsDeserializingBufferProvider;
+
+        // Combine the complex script providers with the baked data for non-complex scripts.
+        let combined = icu_provider_adapters::fork::ForkByMarkerProvider::new(
+            provider.as_deserializing(),
+            &icu_segmenter::provider::Baked,
+        );
+
+        self.word_segmenter = match mode {
+            SegmenterMode::Auto => {
+                WordSegmenter::try_new_auto_unstable(&combined, WordBreakOptions::default())?
+            }
+            SegmenterMode::Dictionary => {
+                WordSegmenter::try_new_dictionary_unstable(&combined, WordBreakOptions::default())?
+            }
+        };
+
+        self.line_segmenter_normal = match mode {
+            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::Normal),
+            )?,
+            SegmenterMode::Dictionary => LineSegmenter::try_new_dictionary_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::Normal),
+            )?,
+        };
+        self.line_segmenter_break_all = match mode {
+            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::BreakAll),
+            )?,
+            SegmenterMode::Dictionary => LineSegmenter::try_new_dictionary_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::BreakAll),
+            )?,
+        };
+        self.line_segmenter_keep_all = match mode {
+            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::KeepAll),
+            )?,
+            SegmenterMode::Dictionary => LineSegmenter::try_new_dictionary_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::KeepAll),
+            )?,
+        };
+
+        Ok(())
     }
 
     #[inline(always)]
@@ -47,29 +209,11 @@ impl AnalysisDataSources {
     }
 
     #[inline(always)]
-    fn line_segmenter(&self, word_break_strength: WordBreak) -> LineSegmenterBorrowed<'static> {
+    fn line_segmenter(&self, word_break_strength: WordBreak) -> LineSegmenterBorrowed<'_> {
         match word_break_strength {
-            WordBreak::Normal => {
-                const {
-                    let mut opt = LineBreakOptions::default();
-                    opt.word_option = Some(LineBreakWordOption::Normal);
-                    LineSegmenter::new_for_non_complex_scripts(opt)
-                }
-            }
-            WordBreak::BreakAll => {
-                const {
-                    let mut opt = LineBreakOptions::default();
-                    opt.word_option = Some(LineBreakWordOption::BreakAll);
-                    LineSegmenter::new_for_non_complex_scripts(opt)
-                }
-            }
-            WordBreak::KeepAll => {
-                const {
-                    let mut opt = LineBreakOptions::default();
-                    opt.word_option = Some(LineBreakWordOption::KeepAll);
-                    LineSegmenter::new_for_non_complex_scripts(opt)
-                }
-            }
+            WordBreak::Normal => self.line_segmenter_normal.as_borrowed(),
+            WordBreak::KeepAll => self.line_segmenter_keep_all.as_borrowed(),
+            WordBreak::BreakAll => self.line_segmenter_break_all.as_borrowed(),
         }
     }
 
