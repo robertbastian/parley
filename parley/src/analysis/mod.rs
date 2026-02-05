@@ -26,13 +26,6 @@ use icu_segmenter::{
 };
 use parley_data::CompositeProps;
 
-#[cfg(feature = "runtime-segmenter-data")]
-use icu_provider::buf::AsDeserializingBufferProvider;
-#[cfg(feature = "runtime-segmenter-data")]
-use icu_provider_adapters::fork::{
-    ForkByMarkerProvider, MultiForkByErrorProvider, predicates::IdentifierNotFoundPredicate,
-};
-
 /// Segmenter model data that can be loaded at runtime.
 ///
 /// This type wraps binary blob data containing LSTM models or dictionaries for language-specific word/line
@@ -76,14 +69,6 @@ impl SegmenterModelData {
     }
 }
 
-/// The buffer provider for all data loaded at runtime.
-#[cfg(feature = "runtime-segmenter-data")]
-struct RuntimeBufferProvider {
-    provider:
-        MultiForkByErrorProvider<icu_provider_blob::BlobDataProvider, IdentifierNotFoundPredicate>,
-    segmenter_mode: SegmenterMode,
-}
-
 #[allow(unused)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SegmenterMode {
@@ -96,73 +81,25 @@ pub(crate) enum SegmenterMode {
 pub(crate) struct AnalysisDataSources {
     grapheme_segmenter: GraphemeClusterSegmenter,
     word_segmenter: WordSegmenter,
-    line_segmenters: LineSegmenters,
+    line_segmenter_normal: LineSegmenter,
+    line_segmenter_keep_all: LineSegmenter,
+    line_segmenter_break_all: LineSegmenter,
     composing_normalizer: CanonicalComposition,
     decomposing_normalizer: CanonicalDecomposition,
     script_short_name: PropertyNamesShort<Script>,
     brackets: CodePointMapData<BidiMirroringGlyph>,
 
     composite: CompositeProps,
-
-    #[cfg(feature = "runtime-segmenter-data")]
-    runtime_buffer_provider: Option<RuntimeBufferProvider>,
 }
 
-#[derive(Default)]
-struct LineSegmenters {
-    normal: Option<LineSegmenter>,
-    keep_all: Option<LineSegmenter>,
-    break_all: Option<LineSegmenter>,
-}
-
-impl LineSegmenters {
-    fn get(
-        &mut self,
-        word_break_strength: WordBreak,
-        #[cfg(feature = "runtime-segmenter-data")] runtime_buffer_provider: Option<
-            &RuntimeBufferProvider,
-        >,
-    ) -> LineSegmenterBorrowed<'_> {
-        let segmenter = match word_break_strength {
-            WordBreak::Normal => &mut self.normal,
-            WordBreak::KeepAll => &mut self.keep_all,
-            WordBreak::BreakAll => &mut self.break_all,
-        };
-
-        segmenter
-            .get_or_insert_with(|| {
-                let mut line_break_opts = LineBreakOptions::default();
-                let word_break_strength_icu = match word_break_strength {
-                    WordBreak::Normal => LineBreakWordOption::Normal,
-                    WordBreak::BreakAll => LineBreakWordOption::BreakAll,
-                    WordBreak::KeepAll => LineBreakWordOption::KeepAll,
-                };
-                line_break_opts.word_option = Some(word_break_strength_icu);
-
-                #[cfg(feature = "runtime-segmenter-data")]
-                if let Some(&RuntimeBufferProvider {
-                    ref provider,
-                    segmenter_mode,
-                }) = runtime_buffer_provider
-                {
-                    let combined =
-                        ForkByMarkerProvider::new(provider.as_deserializing(), &PROVIDER);
-                    return match segmenter_mode {
-                        SegmenterMode::Auto => {
-                            LineSegmenter::try_new_auto_unstable(&combined, line_break_opts)
-                        }
-                        SegmenterMode::Dictionary => {
-                            LineSegmenter::try_new_dictionary_unstable(&combined, line_break_opts)
-                        }
-                    }
-                    .expect("Failed to create LineSegmenter");
-                }
-
-                LineSegmenter::try_new_for_non_complex_scripts_unstable(&PROVIDER, line_break_opts)
-                    .expect("Failed to create LineSegmenter")
-            })
-            .as_borrowed()
-    }
+fn to_line_break_opts(wb: WordBreak) -> LineBreakOptions<'static> {
+    let mut line_break_opts = LineBreakOptions::default();
+    line_break_opts.word_option = Some(match wb {
+        WordBreak::Normal => LineBreakWordOption::Normal,
+        WordBreak::BreakAll => LineBreakWordOption::BreakAll,
+        WordBreak::KeepAll => LineBreakWordOption::KeepAll,
+    });
+    line_break_opts
 }
 
 impl AnalysisDataSources {
@@ -174,80 +111,101 @@ impl AnalysisDataSources {
                 WordBreakOptions::default(),
             )
             .unwrap(),
-            line_segmenters: LineSegmenters::default(),
+            line_segmenter_normal: LineSegmenter::try_new_for_non_complex_scripts_unstable(
+                &PROVIDER,
+                to_line_break_opts(WordBreak::Normal),
+            )
+            .unwrap(),
+            line_segmenter_break_all: LineSegmenter::try_new_for_non_complex_scripts_unstable(
+                &PROVIDER,
+                to_line_break_opts(WordBreak::BreakAll),
+            )
+            .unwrap(),
+            line_segmenter_keep_all: LineSegmenter::try_new_for_non_complex_scripts_unstable(
+                &PROVIDER,
+                to_line_break_opts(WordBreak::KeepAll),
+            )
+            .unwrap(),
             composing_normalizer: CanonicalComposition::try_new_unstable(&PROVIDER).unwrap(),
             decomposing_normalizer: CanonicalDecomposition::try_new_unstable(&PROVIDER).unwrap(),
             script_short_name: PropertyNamesShort::<Script>::try_new_unstable(&PROVIDER).unwrap(),
             brackets: CodePointMapData::<BidiMirroringGlyph>::try_new_unstable(&PROVIDER).unwrap(),
             composite: CompositeProps,
-            #[cfg(feature = "runtime-segmenter-data")]
-            runtime_buffer_provider: None,
         }
-    }
-
-    #[cfg(feature = "runtime-segmenter-data")]
-    fn reinitialize_word_segmenter(&mut self) {
-        let Some(buffer_provider) = self.runtime_buffer_provider.as_ref() else {
-            return;
-        };
-        // Combine the complex script providers with the baked data for non-complex scripts.
-        let combined =
-            ForkByMarkerProvider::new(buffer_provider.provider.as_deserializing(), &PROVIDER);
-
-        self.word_segmenter = match buffer_provider.segmenter_mode {
-            SegmenterMode::Auto => {
-                WordSegmenter::try_new_auto_unstable(&combined, WordBreakOptions::default())
-            }
-            SegmenterMode::Dictionary => {
-                WordSegmenter::try_new_dictionary_unstable(&combined, WordBreakOptions::default())
-            }
-        }
-        .expect("Failed to create WordSegmenter with runtime models");
-
-        // Clear cached line segmenters; they will be lazily recreated with the new mode.
-        self.line_segmenters = LineSegmenters::default();
     }
 
     #[cfg(feature = "runtime-segmenter-data")]
     pub(crate) fn load_segmenter_models(
         &mut self,
-        providers: Vec<icu_provider_blob::BlobDataProvider>,
+        models: impl IntoIterator<Item = SegmenterModelData>,
         mode: SegmenterMode,
-    ) {
+    ) -> Result<(), icu_provider::DataError> {
         // Create a forking buffer provider that combines all blob providers.
-        let buffer_provider = RuntimeBufferProvider {
-            provider: MultiForkByErrorProvider::new_with_predicate(
-                providers,
-                IdentifierNotFoundPredicate,
+        self.reinitialize_segmenters(
+            icu_provider_adapters::fork::MultiForkByErrorProvider::new_with_predicate(
+                models.into_iter().map(|p| p.provider).collect(),
+                icu_provider_adapters::fork::predicates::IdentifierNotFoundPredicate,
             ),
-            segmenter_mode: mode,
-        };
-        self.runtime_buffer_provider = Some(buffer_provider);
-
-        self.reinitialize_word_segmenter();
+            mode,
+        )
     }
 
     #[cfg(feature = "runtime-segmenter-data")]
-    pub(crate) fn append_segmenter_model(
+    fn reinitialize_segmenters(
         &mut self,
-        provider: icu_provider_blob::BlobDataProvider,
+        provider: icu_provider_adapters::fork::MultiForkByErrorProvider<
+            icu_provider_blob::BlobDataProvider,
+            icu_provider_adapters::fork::predicates::IdentifierNotFoundPredicate,
+        >,
         mode: SegmenterMode,
-    ) {
-        match self.runtime_buffer_provider.as_mut() {
-            None => {
-                self.load_segmenter_models(alloc::vec![provider], mode);
-            }
-            Some(buffer_provider) => {
-                let cur_mode = buffer_provider.segmenter_mode;
-                assert_eq!(
-                    cur_mode, mode,
-                    "Tried to load a {mode:?} segmenter model, but the current segmenters are {cur_mode:?}"
-                );
+    ) -> Result<(), icu_provider::DataError> {
+        use icu_provider::buf::AsDeserializingBufferProvider;
 
-                buffer_provider.provider.push(provider);
-                self.reinitialize_word_segmenter();
+        // Combine the complex script providers with the baked data for non-complex scripts.
+        let combined =
+            icu_provider_adapters::fork::ForkByMarkerProvider::new(provider.as_deserializing(), &PROVIDER);
+
+        self.word_segmenter = match mode {
+            SegmenterMode::Auto => {
+                WordSegmenter::try_new_auto_unstable(&combined, WordBreakOptions::default())?
             }
-        }
+            SegmenterMode::Dictionary => {
+                WordSegmenter::try_new_dictionary_unstable(&combined, WordBreakOptions::default())?
+            }
+        };
+
+        self.line_segmenter_normal = match mode {
+            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::Normal),
+            )?,
+            SegmenterMode::Dictionary => LineSegmenter::try_new_dictionary_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::Normal),
+            )?,
+        };
+        self.line_segmenter_break_all = match mode {
+            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::BreakAll),
+            )?,
+            SegmenterMode::Dictionary => LineSegmenter::try_new_dictionary_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::BreakAll),
+            )?,
+        };
+        self.line_segmenter_keep_all = match mode {
+            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::KeepAll),
+            )?,
+            SegmenterMode::Dictionary => LineSegmenter::try_new_dictionary_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::KeepAll),
+            )?,
+        };
+
+        Ok(())
     }
 
     #[inline(always)]
@@ -260,14 +218,10 @@ impl AnalysisDataSources {
         &mut self,
         word_break_strength: WordBreak,
     ) -> LineSegmenterBorrowed<'_> {
-        #[cfg(feature = "runtime-segmenter-data")]
-        {
-            self.line_segmenters
-                .get(word_break_strength, self.runtime_buffer_provider.as_ref())
-        }
-        #[cfg(not(feature = "runtime-segmenter-data"))]
-        {
-            self.line_segmenters.get(word_break_strength)
+        match word_break_strength {
+            WordBreak::Normal => self.line_segmenter_normal.as_borrowed(),
+            WordBreak::KeepAll => self.line_segmenter_keep_all.as_borrowed(),
+            WordBreak::BreakAll => self.line_segmenter_break_all.as_borrowed(),
         }
     }
 

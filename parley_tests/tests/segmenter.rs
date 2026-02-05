@@ -49,7 +49,7 @@ fn thai_line_break_with_model() {
 
     // Load the Thai LSTM model
     env.layout_context_mut()
-        .load_segmenter_models_auto([load_thai_model()]);
+        .load_segmenter_models_auto([load_thai_model()]).unwrap();
 
     let mut builder = env.ranged_builder(THAI_TEXT);
     builder.push_default(StyleProperty::Brush(ColorBrush::new(css::BLACK)));
@@ -88,7 +88,7 @@ fn mixed_script_line_break_with_multiple_models() {
 
     // Load both Thai and Burmese LSTM models
     env.layout_context_mut()
-        .load_segmenter_models_auto([load_thai_model(), load_burmese_model()]);
+        .load_segmenter_models_auto([load_thai_model(), load_burmese_model()]).unwrap();
 
     let mut builder = env.ranged_builder(MIXED_THAI_BURMESE);
     builder.push_default(StyleProperty::FontSize(20.0));

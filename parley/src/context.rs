@@ -82,11 +82,11 @@ impl<B: Brush> LayoutContext<B> {
     pub fn load_segmenter_models_auto(
         &mut self,
         models: impl IntoIterator<Item = crate::SegmenterModelData>,
-    ) {
+    ) -> Result<(), icu_provider::DataError> {
         self.analysis_data_sources.load_segmenter_models(
-            models.into_iter().map(|model| model.provider).collect(),
+            models,
             crate::analysis::SegmenterMode::Auto,
-        );
+        )
     }
 
     /// Loads runtime dictionary segmenter models for word/line breaking.
@@ -113,46 +113,11 @@ impl<B: Brush> LayoutContext<B> {
     pub fn load_segmenter_models_dictionary(
         &mut self,
         models: impl IntoIterator<Item = crate::SegmenterModelData>,
-    ) {
+    ) -> Result<(), icu_provider::DataError> {
         self.analysis_data_sources.load_segmenter_models(
-            models.into_iter().map(|model| model.provider).collect(),
+            models,
             crate::analysis::SegmenterMode::Dictionary,
-        );
-    }
-
-    /// Add a runtime segmenter model for improved word/line breaking. See [`Self::load_segmenter_models_auto`] for
-    /// more.
-    ///
-    /// This method does *not* handle duplicates--if you load the same model twice, it will simply attempt to use it
-    /// twice during text analysis and make things slower.
-    ///
-    /// # Panics
-    ///
-    /// If you previously called [`Self::load_segmenter_models_dictionary`] or
-    /// [`Self::append_segmenter_model_dictionary`] to load a dictionary segmenter. Previously-loaded segmenters, if
-    /// any, must have been "auto".
-    #[cfg(feature = "runtime-segmenter-data")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "runtime-segmenter-data")))]
-    pub fn append_segmenter_model_auto(&mut self, model: crate::SegmenterModelData) {
-        self.analysis_data_sources
-            .append_segmenter_model(model.provider, crate::analysis::SegmenterMode::Auto);
-    }
-
-    /// Add a runtime segmenter model for improved word/line breaking. See [`Self::load_segmenter_models_dictionary`]
-    /// for more.
-    ///
-    /// This method does *not* handle duplicates--if you load the same model twice, it will simply attempt to use it
-    /// twice during text analysis and make things slower.
-    /// 
-    /// # Panics
-    /// 
-    /// If you previously called [`Self::load_segmenter_models_auto`] or [`Self::append_segmenter_model_auto`] to load
-    /// an "auto mode" segmenter. Previously-loaded segmenters, if any, must have been "dictionary".
-    #[cfg(feature = "runtime-segmenter-data")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "runtime-segmenter-data")))]
-    pub fn append_segmenter_model_dictionary(&mut self, model: crate::SegmenterModelData) {
-        self.analysis_data_sources
-            .append_segmenter_model(model.provider, crate::analysis::SegmenterMode::Dictionary);
+        )
     }
 
     fn resolve_style_set(
