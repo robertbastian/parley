@@ -76,14 +76,6 @@ impl SegmenterModelData {
     }
 }
 
-/// The buffer provider for all data loaded at runtime.
-#[cfg(feature = "runtime-segmenter-data")]
-struct RuntimeBufferProvider {
-    provider:
-        MultiForkByErrorProvider<icu_provider_blob::BlobDataProvider, IdentifierNotFoundPredicate>,
-    segmenter_mode: SegmenterMode,
-}
-
 #[allow(unused)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SegmenterMode {
@@ -98,8 +90,6 @@ pub(crate) struct AnalysisDataSources {
     line_segmenter_normal: LineSegmenter,
     line_segmenter_keep_all: LineSegmenter,
     line_segmenter_break_all: LineSegmenter,
-    #[cfg(feature = "runtime-segmenter-data")]
-    runtime_buffer_provider: Option<RuntimeBufferProvider>,
 }
 
 fn to_line_break_opts(wb: WordBreak) -> LineBreakOptions<'static> {
@@ -131,23 +121,23 @@ impl AnalysisDataSources {
                 to_line_break_opts(WordBreak::BreakAll),
             )
             .static_to_owned(),
-            #[cfg(feature = "runtime-segmenter-data")]
-            runtime_buffer_provider: None,
         }
     }
 
     #[cfg(feature = "runtime-segmenter-data")]
-    fn reinitialize_segmenters(&mut self) -> Result<(), icu_provider::DataError> {
-        let Some(buffer_provider) = self.runtime_buffer_provider.as_ref() else {
-            return Ok(());
-        };
+    pub(crate) fn load_segmenter_models(
+        &mut self,
+        providers: Vec<icu_provider_blob::BlobDataProvider>,
+        mode: SegmenterMode,
+    ) -> Result<(), icu_provider::DataError> {
+        // Create a forking buffer provider that combines all blob providers.
+        let provider =
+            MultiForkByErrorProvider::new_with_predicate(providers, IdentifierNotFoundPredicate);
         // Combine the complex script providers with the baked data for non-complex scripts.
-        let combined = ForkByMarkerProvider::new(
-            buffer_provider.provider.as_deserializing(),
-            &icu_segmenter::provider::Baked,
-        );
+        let combined =
+            ForkByMarkerProvider::new(provider.as_deserializing(), &icu_segmenter::provider::Baked);
 
-        self.word_segmenter = match buffer_provider.segmenter_mode {
+        self.word_segmenter = match mode {
             SegmenterMode::Auto => {
                 WordSegmenter::try_new_auto_unstable(&combined, WordBreakOptions::default())
             }
@@ -156,7 +146,7 @@ impl AnalysisDataSources {
             }
         }?;
 
-        self.line_segmenter_normal = match buffer_provider.segmenter_mode {
+        self.line_segmenter_normal = match mode {
             SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
                 &combined,
                 to_line_break_opts(WordBreak::Normal),
@@ -167,7 +157,7 @@ impl AnalysisDataSources {
             ),
         }?;
 
-        self.line_segmenter_keep_all = match buffer_provider.segmenter_mode {
+        self.line_segmenter_keep_all = match mode {
             SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
                 &combined,
                 to_line_break_opts(WordBreak::KeepAll),
@@ -178,7 +168,7 @@ impl AnalysisDataSources {
             ),
         }?;
 
-        self.line_segmenter_break_all = match buffer_provider.segmenter_mode {
+        self.line_segmenter_break_all = match mode {
             SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
                 &combined,
                 to_line_break_opts(WordBreak::BreakAll),
@@ -190,46 +180,6 @@ impl AnalysisDataSources {
         }?;
 
         Ok(())
-    }
-
-    #[cfg(feature = "runtime-segmenter-data")]
-    pub(crate) fn load_segmenter_models(
-        &mut self,
-        providers: Vec<icu_provider_blob::BlobDataProvider>,
-        mode: SegmenterMode,
-    ) -> Result<(), icu_provider::DataError> {
-        // Create a forking buffer provider that combines all blob providers.
-        let buffer_provider = RuntimeBufferProvider {
-            provider: MultiForkByErrorProvider::new_with_predicate(
-                providers,
-                IdentifierNotFoundPredicate,
-            ),
-            segmenter_mode: mode,
-        };
-        self.runtime_buffer_provider = Some(buffer_provider);
-
-        self.reinitialize_segmenters()
-    }
-
-    #[cfg(feature = "runtime-segmenter-data")]
-    pub(crate) fn append_segmenter_model(
-        &mut self,
-        provider: icu_provider_blob::BlobDataProvider,
-        mode: SegmenterMode,
-    ) -> Result<(), icu_provider::DataError> {
-        match self.runtime_buffer_provider.as_mut() {
-            None => self.load_segmenter_models(alloc::vec![provider], mode),
-            Some(buffer_provider) => {
-                let cur_mode = buffer_provider.segmenter_mode;
-                assert_eq!(
-                    cur_mode, mode,
-                    "Tried to load a {mode:?} segmenter model, but the current segmenters are {cur_mode:?}"
-                );
-
-                buffer_provider.provider.push(provider);
-                self.reinitialize_segmenters()
-            }
-        }
     }
 
     #[inline(always)]
