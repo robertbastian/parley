@@ -17,9 +17,7 @@ use icu_properties::props::{BidiMirroringGlyph, GeneralCategory, GraphemeCluster
 use icu_properties::{
     CodePointMapData, CodePointMapDataBorrowed, PropertyNamesShort, PropertyNamesShortBorrowed,
 };
-use icu_segmenter::options::{
-    LineBreakOptions, LineBreakWordOption, WordBreakInvariantOptions, WordBreakOptions,
-};
+use icu_segmenter::options::{LineBreakOptions, LineBreakWordOption, WordBreakInvariantOptions};
 use icu_segmenter::{
     GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed, LineSegmenter,
     LineSegmenterBorrowed, WordSegmenter, WordSegmenterBorrowed,
@@ -27,10 +25,8 @@ use icu_segmenter::{
 use parley_data::Properties;
 
 #[cfg(feature = "runtime-segmenter-data")]
-use icu_provider::buf::AsDeserializingBufferProvider;
-#[cfg(feature = "runtime-segmenter-data")]
 use icu_provider_adapters::fork::{
-    ForkByMarkerProvider, MultiForkByErrorProvider, predicates::IdentifierNotFoundPredicate,
+    MultiForkByErrorProvider, predicates::IdentifierNotFoundPredicate,
 };
 
 /// Segmenter model data that can be loaded at runtime.
@@ -76,30 +72,11 @@ impl SegmenterModelData {
     }
 }
 
-#[allow(unused)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SegmenterMode {
-    /// Use LSTM for SE Asian scripts, dictionary for CJK (default).
-    Auto,
-    /// Use dictionary for all complex scripts.
-    Dictionary,
-}
-
 pub(crate) struct AnalysisDataSources {
     word_segmenter: WordSegmenter,
     line_segmenter_normal: LineSegmenter,
     line_segmenter_keep_all: LineSegmenter,
     line_segmenter_break_all: LineSegmenter,
-}
-
-fn to_line_break_opts(wb: WordBreak) -> LineBreakOptions<'static> {
-    let mut line_break_opts = LineBreakOptions::default();
-    line_break_opts.word_option = Some(match wb {
-        WordBreak::Normal => LineBreakWordOption::Normal,
-        WordBreak::BreakAll => LineBreakWordOption::BreakAll,
-        WordBreak::KeepAll => LineBreakWordOption::KeepAll,
-    });
-    line_break_opts
 }
 
 impl AnalysisDataSources {
@@ -109,17 +86,23 @@ impl AnalysisDataSources {
                 WordBreakInvariantOptions::default(),
             )
             .static_to_owned(),
-            line_segmenter_normal: LineSegmenter::new_for_non_complex_scripts(to_line_break_opts(
-                WordBreak::Normal,
-            ))
+            line_segmenter_normal: LineSegmenter::new_for_non_complex_scripts({
+                let mut line_break_opts = LineBreakOptions::default();
+                line_break_opts.word_option = Some(LineBreakWordOption::Normal);
+                line_break_opts
+            })
             .static_to_owned(),
-            line_segmenter_keep_all: LineSegmenter::new_for_non_complex_scripts(
-                to_line_break_opts(WordBreak::KeepAll),
-            )
+            line_segmenter_keep_all: LineSegmenter::new_for_non_complex_scripts({
+                let mut line_break_opts = LineBreakOptions::default();
+                line_break_opts.word_option = Some(LineBreakWordOption::KeepAll);
+                line_break_opts
+            })
             .static_to_owned(),
-            line_segmenter_break_all: LineSegmenter::new_for_non_complex_scripts(
-                to_line_break_opts(WordBreak::BreakAll),
-            )
+            line_segmenter_break_all: LineSegmenter::new_for_non_complex_scripts({
+                let mut line_break_opts = LineBreakOptions::default();
+                line_break_opts.word_option = Some(LineBreakWordOption::BreakAll);
+                line_break_opts
+            })
             .static_to_owned(),
         }
     }
@@ -128,56 +111,29 @@ impl AnalysisDataSources {
     pub(crate) fn load_segmenter_models(
         &mut self,
         providers: Vec<icu_provider_blob::BlobDataProvider>,
-        mode: SegmenterMode,
     ) -> Result<(), icu_provider::DataError> {
         // Create a forking buffer provider that combines all blob providers.
         let provider =
             MultiForkByErrorProvider::new_with_predicate(providers, IdentifierNotFoundPredicate);
-        // Combine the complex script providers with the baked data for non-complex scripts.
-        let combined =
-            ForkByMarkerProvider::new(provider.as_deserializing(), &icu_segmenter::provider::Baked);
 
-        self.word_segmenter = match mode {
-            SegmenterMode::Auto => {
-                WordSegmenter::try_new_auto_unstable(&combined, WordBreakOptions::default())
-            }
-            SegmenterMode::Dictionary => {
-                WordSegmenter::try_new_dictionary_unstable(&combined, WordBreakOptions::default())
-            }
-        }?;
+        // load dictionaries first, as they are higher quality
+        self.word_segmenter
+            .load_dictionary_with_buffer_provider(&provider)?;
+        self.line_segmenter_normal
+            .load_dictionary_with_buffer_provider(&provider)?;
+        self.line_segmenter_keep_all
+            .load_dictionary_with_buffer_provider(&provider)?;
+        self.line_segmenter_break_all
+            .load_dictionary_with_buffer_provider(&provider)?;
 
-        self.line_segmenter_normal = match mode {
-            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
-                &combined,
-                to_line_break_opts(WordBreak::Normal),
-            ),
-            SegmenterMode::Dictionary => LineSegmenter::try_new_lstm_unstable(
-                &combined,
-                to_line_break_opts(WordBreak::Normal),
-            ),
-        }?;
-
-        self.line_segmenter_keep_all = match mode {
-            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
-                &combined,
-                to_line_break_opts(WordBreak::KeepAll),
-            ),
-            SegmenterMode::Dictionary => LineSegmenter::try_new_lstm_unstable(
-                &combined,
-                to_line_break_opts(WordBreak::KeepAll),
-            ),
-        }?;
-
-        self.line_segmenter_break_all = match mode {
-            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
-                &combined,
-                to_line_break_opts(WordBreak::BreakAll),
-            ),
-            SegmenterMode::Dictionary => LineSegmenter::try_new_lstm_unstable(
-                &combined,
-                to_line_break_opts(WordBreak::BreakAll),
-            ),
-        }?;
+        self.word_segmenter
+            .load_lstm_with_buffer_provider(&provider)?;
+        self.line_segmenter_normal
+            .load_lstm_with_buffer_provider(&provider)?;
+        self.line_segmenter_keep_all
+            .load_lstm_with_buffer_provider(&provider)?;
+        self.line_segmenter_break_all
+            .load_lstm_with_buffer_provider(&provider)?;
 
         Ok(())
     }
