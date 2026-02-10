@@ -1,10 +1,8 @@
 // Copyright 2025 the Parley Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Unicode data that Parley's text analysis and shaping pipeline needs at runtime by exposing:
-//!
-//! - Re-exported ICU4X data providers for grapheme, word, and line breaking, plus Unicode normalization tables used by Parley.
-//! - A locale-invariant `CompositeProps` provider backed by a compact `CodePointTrie`, allowing the engine to obtain all required character properties with a single lookup.
+//! `parley_data` packages the Unicode data that Parley's text analysis and shaping pipeline needs at runtime.
+//! It exposes a locale-invariant `CompositeProps` data backed by a compact `CodePointTrie`, allowing the engine to obtain all required character properties with a single lookup.
 //! - Runtime loading of segmenter models for language-specific word/line breaking (via Parley's `SegmenterModelData`).
 //!
 //! # Pluggable segmenter models
@@ -21,19 +19,6 @@ use icu_properties::props::{BidiClass, GeneralCategory, GraphemeClusterBreak, Sc
 /// Baked data.
 #[cfg(feature = "baked")]
 pub mod generated;
-
-/// Lookup for [`Properties`]
-#[derive(Clone, Debug, Copy)]
-pub struct CompositeProps;
-
-#[cfg(feature = "baked")]
-impl CompositeProps {
-    /// Returns the properties for a given character.
-    #[inline(always)]
-    pub fn properties(&self, ch: u32) -> Properties {
-        Properties(generated::COMPOSITE.get32(ch))
-    }
-}
 
 /// Unicode character properties relevant for text analysis.
 #[derive(Copy, Clone, Debug)]
@@ -61,8 +46,14 @@ impl Properties {
     const IS_MANDATORY_LINE_BREAK_SHIFT: u32 =
         Self::IS_REGION_INDICATOR_SHIFT + Self::IS_REGION_INDICATOR_BITS;
 
-    /// Packs the given arguments into a single u32.
-    #[cfg(feature = "datagen")]
+    #[cfg(feature = "baked")]
+    #[inline(always)]
+    /// Returns the properties for a given character.
+    pub fn get(ch: char) -> Self {
+        Self(generated::COMPOSITE.get(ch))
+    }
+
+    /// Creates a new [`Properties`] from the given properties
     pub fn new(
         script: Script,
         gc: GeneralCategory,
@@ -91,7 +82,7 @@ impl Properties {
     }
 
     #[inline(always)]
-    fn get(&self, shift: u32, bits: u32) -> u32 {
+    fn bits(&self, shift: u32, bits: u32) -> u32 {
         (self.0 >> shift) & ((1 << bits) - 1)
     }
 
@@ -102,7 +93,7 @@ impl Properties {
             clippy::cast_possible_truncation,
             reason = "script data only occupies SCRIPT_BITS bits; we cast to `u16` to fulfil the `from_icu4c_value` contract."
         )]
-        Script::from_icu4c_value(self.get(Self::SCRIPT_SHIFT, Self::SCRIPT_BITS) as u16)
+        Script::from_icu4c_value(self.bits(Self::SCRIPT_SHIFT, Self::SCRIPT_BITS) as u16)
     }
 
     /// Returns the general category for the character.
@@ -112,7 +103,7 @@ impl Properties {
             clippy::cast_possible_truncation,
             reason = "general category data only occupies GC_BITS bits."
         )]
-        GeneralCategory::try_from(self.get(Self::GC_SHIFT, Self::GC_BITS) as u8).unwrap()
+        GeneralCategory::try_from(self.bits(Self::GC_SHIFT, Self::GC_BITS) as u8).unwrap()
     }
 
     /// Returns the grapheme cluster break for the character.
@@ -122,7 +113,7 @@ impl Properties {
             clippy::cast_possible_truncation,
             reason = "cluster break data only occupies GCB_BITS bits"
         )]
-        GraphemeClusterBreak::from_icu4c_value(self.get(Self::GCB_SHIFT, Self::GCB_BITS) as u8)
+        GraphemeClusterBreak::from_icu4c_value(self.bits(Self::GCB_SHIFT, Self::GCB_BITS) as u8)
     }
 
     /// Returns the bidirectional class for the character.
@@ -132,13 +123,13 @@ impl Properties {
             clippy::cast_possible_truncation,
             reason = "bidi class data only occupies BIDI_BITS bits"
         )]
-        BidiClass::from_icu4c_value(self.get(Self::BIDI_SHIFT, Self::BIDI_BITS) as u8)
+        BidiClass::from_icu4c_value(self.bits(Self::BIDI_SHIFT, Self::BIDI_BITS) as u8)
     }
 
     /// Returns whether the character is an emoji or pictograph.
     #[inline(always)]
     pub fn is_emoji_or_pictograph(&self) -> bool {
-        self.get(
+        self.bits(
             Self::IS_EMOJI_OR_PICTOGRAPH_SHIFT,
             Self::IS_EMOJI_OR_PICTOGRAPH_BITS,
         ) != 0
@@ -147,7 +138,7 @@ impl Properties {
     /// Returns whether the character is a variation selector.
     #[inline(always)]
     pub fn is_variation_selector(&self) -> bool {
-        self.get(
+        self.bits(
             Self::IS_VARIATION_SELECTOR_SHIFT,
             Self::IS_VARIATION_SELECTOR_BITS,
         ) != 0
@@ -156,7 +147,7 @@ impl Properties {
     /// Returns whether the character is a region indicator.
     #[inline(always)]
     pub fn is_region_indicator(&self) -> bool {
-        self.get(
+        self.bits(
             Self::IS_REGION_INDICATOR_SHIFT,
             Self::IS_REGION_INDICATOR_BITS,
         ) != 0
@@ -165,7 +156,7 @@ impl Properties {
     /// Returns whether the character is a mandatory linebreak.
     #[inline(always)]
     pub fn is_mandatory_linebreak(&self) -> bool {
-        self.get(
+        self.bits(
             Self::IS_MANDATORY_LINE_BREAK_SHIFT,
             Self::IS_MANDATORY_LINE_BREAK_BITS,
         ) != 0
@@ -187,43 +178,38 @@ impl From<Properties> for u32 {
 pub mod bundled_models {
     /// Thai LSTM model for word/line segmentation.
     pub const THAI_LSTM: &[u8] = include_bytes!(
-        "generated/icu4x_data/segmenter_models/Thai_codepoints_exclusive_model4_heavy.postcard"
+        "generated/segmenter_models/Thai_codepoints_exclusive_model4_heavy.postcard"
     );
 
     /// Lao LSTM model for word/line segmentation.
-    pub const LAO_LSTM: &[u8] = include_bytes!(
-        "generated/icu4x_data/segmenter_models/Lao_codepoints_exclusive_model4_heavy.postcard"
-    );
+    pub const LAO_LSTM: &[u8] =
+        include_bytes!("generated/segmenter_models/Lao_codepoints_exclusive_model4_heavy.postcard");
 
     /// Khmer LSTM model for word/line segmentation.
     pub const KHMER_LSTM: &[u8] = include_bytes!(
-        "generated/icu4x_data/segmenter_models/Khmer_codepoints_exclusive_model4_heavy.postcard"
+        "generated/segmenter_models/Khmer_codepoints_exclusive_model4_heavy.postcard"
     );
 
     /// Burmese LSTM model for word/line segmentation.
     pub const BURMESE_LSTM: &[u8] = include_bytes!(
-        "generated/icu4x_data/segmenter_models/Burmese_codepoints_exclusive_model4_heavy.postcard"
+        "generated/segmenter_models/Burmese_codepoints_exclusive_model4_heavy.postcard"
     );
 
     /// Chinese/Japanese dictionary for word segmentation.
-    pub const CJ_DICT: &[u8] =
-        include_bytes!("generated/icu4x_data/segmenter_models/cjdict.postcard");
+    pub const CJ_DICT: &[u8] = include_bytes!("generated/segmenter_models/cjdict.postcard");
 
     /// Thai dictionary for word segmentation.
-    pub const THAI_DICT: &[u8] =
-        include_bytes!("generated/icu4x_data/segmenter_models/thaidict.postcard");
+    pub const THAI_DICT: &[u8] = include_bytes!("generated/segmenter_models/thaidict.postcard");
 
     /// Lao dictionary for word segmentation.
-    pub const LAO_DICT: &[u8] =
-        include_bytes!("generated/icu4x_data/segmenter_models/laodict.postcard");
+    pub const LAO_DICT: &[u8] = include_bytes!("generated/segmenter_models/laodict.postcard");
 
     /// Khmer dictionary for word segmentation.
-    pub const KHMER_DICT: &[u8] =
-        include_bytes!("generated/icu4x_data/segmenter_models/khmerdict.postcard");
+    pub const KHMER_DICT: &[u8] = include_bytes!("generated/segmenter_models/khmerdict.postcard");
 
     /// Burmese dictionary for word segmentation.
     pub const BURMESE_DICT: &[u8] =
-        include_bytes!("generated/icu4x_data/segmenter_models/burmesedict.postcard");
+        include_bytes!("generated/segmenter_models/burmesedict.postcard");
 
     /// All bundled LSTM-based segmenters as (model ID, blob) pairs.
     pub const ALL_LSTM: &[(&str, &[u8])] = &[

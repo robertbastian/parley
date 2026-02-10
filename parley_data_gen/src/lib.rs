@@ -5,7 +5,6 @@
 
 use icu_codepointtrie_builder::{CodePointTrieBuilder, CodePointTrieBuilderData};
 use icu_collections::codepointtrie::TrieType;
-use icu_locale::LocaleFallbacker;
 use icu_properties::props::{GeneralCategory, GraphemeClusterBreak, Script};
 use icu_properties::{
     CodePointMapData, CodePointSetData,
@@ -25,56 +24,6 @@ const COPYRIGHT_HEADER: &str =
 
 /// Exports ICU data provider as Rust code into the `out` directory.
 pub fn generate(out: std::path::PathBuf) {
-    let icu4x_source_provider = SourceDataProvider::new();
-
-    // Generate ICU4X data
-    {
-        // The directory for ICU baked data is `out/icu4x_data`.
-        let icu4x_data_dir = out.clone().join("icu4x_data");
-        std::fs::create_dir_all(&icu4x_data_dir).unwrap();
-
-        ExportDriver::new(
-            [DataLocaleFamily::single(DataLocale::default())],
-            DeduplicationStrategy::None.into(),
-            LocaleFallbacker::new_without_data(),
-        )
-        .with_markers([
-            icu_properties::provider::PropertyEnumBidiMirroringGlyphV1::INFO,
-            icu_properties::provider::PropertyNameShortScriptV1::INFO,
-            icu_segmenter::provider::SegmenterBreakGraphemeClusterV1::INFO,
-            icu_segmenter::provider::SegmenterBreakWordOverrideV1::INFO,
-            icu_segmenter::provider::SegmenterLstmAutoV1::INFO,
-            icu_segmenter::provider::SegmenterDictionaryAutoV1::INFO,
-            icu_segmenter::provider::SegmenterDictionaryExtendedV1::INFO,
-            icu_segmenter::provider::SegmenterBreakWordV1::INFO,
-            icu_segmenter::provider::SegmenterBreakLineV1::INFO,
-            icu_normalizer::provider::NormalizerNfcV1::INFO,
-            icu_normalizer::provider::NormalizerNfdDataV1::INFO,
-            icu_normalizer::provider::NormalizerNfdSupplementV1::INFO,
-            icu_normalizer::provider::NormalizerNfdTablesV1::INFO,
-        ])
-        .with_segmenter_models([])
-        .export(
-            &icu4x_source_provider,
-            icu_provider_export::baked_exporter::BakedExporter::new(icu4x_data_dir.clone(), {
-                let mut o = icu_provider_export::baked_exporter::Options::default();
-                o.overwrite = true;
-                o.use_separate_crates = true;
-                o.pretty = true;
-                o
-            })
-            .unwrap(),
-        )
-        .expect("Datagen should be successful");
-        std::fs::write(
-            icu4x_data_dir.clone().join("mod.rs"),
-            COPYRIGHT_HEADER.to_string()
-                + "\n#![allow(clippy::allow_attributes_without_reason)]\n"
-                + &std::fs::read_to_string(icu4x_data_dir.clone().join("mod.rs")).unwrap(),
-        )
-        .unwrap();
-    }
-
     // Generate `CompositeProps` data
     {
         // Dense values table for 0..=0x10FFFF
@@ -109,11 +58,7 @@ pub fn generate(out: std::path::PathBuf) {
         }
         .build();
 
-        let composite_dir = out.join("composite");
-        if !composite_dir.exists() {
-            std::fs::create_dir(&composite_dir).unwrap();
-        }
-        let mut file = BufWriter::new(File::create(composite_dir.join("mod.rs")).unwrap());
+        let mut file = BufWriter::new(File::create(out.join("mod.rs")).unwrap());
 
         writeln!(&mut file, "{COPYRIGHT_HEADER}").unwrap();
         writeln!(&mut file, "/// Backing data for the `CompositeProps`").unwrap();
@@ -135,7 +80,8 @@ pub fn generate(out: std::path::PathBuf) {
 
     // Generate segmenter model blobs (LSTM models for Thai, Lao, Khmer, Burmese)
     {
-        let models_dir = out.join("icu4x_data").join("segmenter_models");
+        let icu4x_source_provider = SourceDataProvider::new();
+        let models_dir = out.join("segmenter_models");
         std::fs::create_dir_all(&models_dir).unwrap();
 
         for model in [
@@ -175,12 +121,4 @@ pub fn generate(out: std::path::PathBuf) {
             .unwrap_or_else(|e| panic!("Failed to export {model}: {e}"));
         }
     }
-
-    let mut file = BufWriter::new(File::create(out.join("mod.rs")).unwrap());
-
-    writeln!(&mut file, "{COPYRIGHT_HEADER}").unwrap();
-    writeln!(&mut file, "mod composite;").unwrap();
-    writeln!(&mut file, "mod icu4x_data;").unwrap();
-    writeln!(&mut file, "pub use composite::*;").unwrap();
-    writeln!(&mut file, "pub use icu4x_data::*;").unwrap();
 }
