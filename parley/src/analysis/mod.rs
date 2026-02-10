@@ -74,9 +74,7 @@ impl SegmenterModelData {
 
 pub(crate) struct AnalysisDataSources {
     word_segmenter: WordSegmenter,
-    line_segmenter_normal: LineSegmenter,
-    line_segmenter_keep_all: LineSegmenter,
-    line_segmenter_break_all: LineSegmenter,
+    line_segmenter: LineSegmenter,
 }
 
 impl AnalysisDataSources {
@@ -86,24 +84,8 @@ impl AnalysisDataSources {
                 WordBreakInvariantOptions::default(),
             )
             .static_to_owned(),
-            line_segmenter_normal: LineSegmenter::new_for_non_complex_scripts({
-                let mut line_break_opts = LineBreakOptions::default();
-                line_break_opts.word_option = Some(LineBreakWordOption::Normal);
-                line_break_opts
-            })
-            .static_to_owned(),
-            line_segmenter_keep_all: LineSegmenter::new_for_non_complex_scripts({
-                let mut line_break_opts = LineBreakOptions::default();
-                line_break_opts.word_option = Some(LineBreakWordOption::KeepAll);
-                line_break_opts
-            })
-            .static_to_owned(),
-            line_segmenter_break_all: LineSegmenter::new_for_non_complex_scripts({
-                let mut line_break_opts = LineBreakOptions::default();
-                line_break_opts.word_option = Some(LineBreakWordOption::BreakAll);
-                line_break_opts
-            })
-            .static_to_owned(),
+            line_segmenter: LineSegmenter::new_for_non_complex_scripts(LineBreakOptions::default())
+                .static_to_owned(),
         }
     }
 
@@ -119,20 +101,12 @@ impl AnalysisDataSources {
         // load dictionaries first, as they are higher quality
         self.word_segmenter
             .load_dictionary_with_buffer_provider(&provider)?;
-        self.line_segmenter_normal
-            .load_dictionary_with_buffer_provider(&provider)?;
-        self.line_segmenter_keep_all
-            .load_dictionary_with_buffer_provider(&provider)?;
-        self.line_segmenter_break_all
+        self.line_segmenter
             .load_dictionary_with_buffer_provider(&provider)?;
 
         self.word_segmenter
             .load_lstm_with_buffer_provider(&provider)?;
-        self.line_segmenter_normal
-            .load_lstm_with_buffer_provider(&provider)?;
-        self.line_segmenter_keep_all
-            .load_lstm_with_buffer_provider(&provider)?;
-        self.line_segmenter_break_all
+        self.line_segmenter
             .load_lstm_with_buffer_provider(&provider)?;
 
         Ok(())
@@ -148,11 +122,15 @@ impl AnalysisDataSources {
         &mut self,
         word_break_strength: WordBreak,
     ) -> LineSegmenterBorrowed<'_> {
-        match word_break_strength {
-            WordBreak::Normal => self.line_segmenter_normal.as_borrowed(),
-            WordBreak::KeepAll => self.line_segmenter_keep_all.as_borrowed(),
-            WordBreak::BreakAll => self.line_segmenter_break_all.as_borrowed(),
-        }
+        let mut line_break_opts = LineBreakOptions::default();
+        line_break_opts.word_option = Some(match word_break_strength {
+            WordBreak::Normal => LineBreakWordOption::Normal,
+            WordBreak::KeepAll => LineBreakWordOption::KeepAll,
+            WordBreak::BreakAll => LineBreakWordOption::BreakAll,
+        });
+        self.line_segmenter
+            .as_borrowed()
+            .with_options(line_break_opts)
     }
 
     #[inline(always)]
