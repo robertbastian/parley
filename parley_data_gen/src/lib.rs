@@ -107,9 +107,6 @@ pub fn generate(out: std::path::PathBuf) {
                 icu_segmenter::provider::SegmenterDictionaryAutoV1::INFO,
                 // SegmenterDictionaryAutoV1 only includes dictionary data for scripts with no LSTM model
                 icu_segmenter::provider::SegmenterDictionaryExtendedV1::INFO,
-                icu_segmenter::provider::SegmenterBreakWordV1::INFO,
-                icu_segmenter::provider::SegmenterBreakWordOverrideV1::INFO,
-                icu_segmenter::provider::SegmenterBreakLineV1::INFO,
             ])
             .with_segmenter_models([(*model).to_string()])
             .export(
