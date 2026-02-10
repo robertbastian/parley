@@ -82,11 +82,11 @@ impl<B: Brush> LayoutContext<B> {
     pub fn load_segmenter_models_auto(
         &mut self,
         models: impl IntoIterator<Item = crate::SegmenterModelData>,
-    ) {
+    ) -> Result<(), icu_provider::DataError> {
         self.analysis_data_sources.load_segmenter_models(
             models.into_iter().map(|model| model.provider).collect(),
             crate::analysis::SegmenterMode::Auto,
-        );
+        )
     }
 
     /// Loads runtime dictionary segmenter models for word/line breaking.
@@ -113,11 +113,11 @@ impl<B: Brush> LayoutContext<B> {
     pub fn load_segmenter_models_dictionary(
         &mut self,
         models: impl IntoIterator<Item = crate::SegmenterModelData>,
-    ) {
+    ) -> Result<(), icu_provider::DataError> {
         self.analysis_data_sources.load_segmenter_models(
             models.into_iter().map(|model| model.provider).collect(),
             crate::analysis::SegmenterMode::Dictionary,
-        );
+        )
     }
 
     /// Add a runtime segmenter model for improved word/line breaking. See [`Self::load_segmenter_models_auto`] for
@@ -133,9 +133,12 @@ impl<B: Brush> LayoutContext<B> {
     /// any, must have been "auto".
     #[cfg(feature = "runtime-segmenter-data")]
     #[cfg_attr(docsrs, doc(cfg(feature = "runtime-segmenter-data")))]
-    pub fn append_segmenter_model_auto(&mut self, model: crate::SegmenterModelData) {
+    pub fn append_segmenter_model_auto(
+        &mut self,
+        model: crate::SegmenterModelData,
+    ) -> Result<(), icu_provider::DataError> {
         self.analysis_data_sources
-            .append_segmenter_model(model.provider, crate::analysis::SegmenterMode::Auto);
+            .append_segmenter_model(model.provider, crate::analysis::SegmenterMode::Auto)
     }
 
     /// Add a runtime segmenter model for improved word/line breaking. See [`Self::load_segmenter_models_dictionary`]
@@ -150,9 +153,12 @@ impl<B: Brush> LayoutContext<B> {
     /// an "auto mode" segmenter. Previously-loaded segmenters, if any, must have been "dictionary".
     #[cfg(feature = "runtime-segmenter-data")]
     #[cfg_attr(docsrs, doc(cfg(feature = "runtime-segmenter-data")))]
-    pub fn append_segmenter_model_dictionary(&mut self, model: crate::SegmenterModelData) {
+    pub fn append_segmenter_model_dictionary(
+        &mut self,
+        model: crate::SegmenterModelData,
+    ) -> Result<(), icu_provider::DataError> {
         self.analysis_data_sources
-            .append_segmenter_model(model.provider, crate::analysis::SegmenterMode::Dictionary);
+            .append_segmenter_model(model.provider, crate::analysis::SegmenterMode::Dictionary)
     }
 
     fn resolve_style_set(

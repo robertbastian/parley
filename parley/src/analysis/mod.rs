@@ -137,9 +137,9 @@ impl AnalysisDataSources {
     }
 
     #[cfg(feature = "runtime-segmenter-data")]
-    fn reinitialize_segmenters(&mut self) {
+    fn reinitialize_segmenters(&mut self) -> Result<(), icu_provider::DataError> {
         let Some(buffer_provider) = self.runtime_buffer_provider.as_ref() else {
-            return;
+            return Ok(());
         };
         // Combine the complex script providers with the baked data for non-complex scripts.
         let combined = ForkByMarkerProvider::new(
@@ -154,8 +154,7 @@ impl AnalysisDataSources {
             SegmenterMode::Dictionary => {
                 WordSegmenter::try_new_dictionary_unstable(&combined, WordBreakOptions::default())
             }
-        }
-        .expect("Failed to create WordSegmenter with runtime models");
+        }?;
 
         self.line_segmenter_normal = match buffer_provider.segmenter_mode {
             SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
@@ -166,8 +165,7 @@ impl AnalysisDataSources {
                 &combined,
                 to_line_break_opts(WordBreak::Normal),
             ),
-        }
-        .expect("Failed to create LineSegmenter with runtime models");
+        }?;
 
         self.line_segmenter_keep_all = match buffer_provider.segmenter_mode {
             SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
@@ -178,8 +176,7 @@ impl AnalysisDataSources {
                 &combined,
                 to_line_break_opts(WordBreak::KeepAll),
             ),
-        }
-        .expect("Failed to create LineSegmenter with runtime models");
+        }?;
 
         self.line_segmenter_break_all = match buffer_provider.segmenter_mode {
             SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
@@ -190,8 +187,9 @@ impl AnalysisDataSources {
                 &combined,
                 to_line_break_opts(WordBreak::BreakAll),
             ),
-        }
-        .expect("Failed to create LineSegmenter with runtime models");
+        }?;
+
+        Ok(())
     }
 
     #[cfg(feature = "runtime-segmenter-data")]
@@ -199,7 +197,7 @@ impl AnalysisDataSources {
         &mut self,
         providers: Vec<icu_provider_blob::BlobDataProvider>,
         mode: SegmenterMode,
-    ) {
+    ) -> Result<(), icu_provider::DataError> {
         // Create a forking buffer provider that combines all blob providers.
         let buffer_provider = RuntimeBufferProvider {
             provider: MultiForkByErrorProvider::new_with_predicate(
@@ -210,7 +208,7 @@ impl AnalysisDataSources {
         };
         self.runtime_buffer_provider = Some(buffer_provider);
 
-        self.reinitialize_segmenters();
+        self.reinitialize_segmenters()
     }
 
     #[cfg(feature = "runtime-segmenter-data")]
@@ -218,11 +216,9 @@ impl AnalysisDataSources {
         &mut self,
         provider: icu_provider_blob::BlobDataProvider,
         mode: SegmenterMode,
-    ) {
+    ) -> Result<(), icu_provider::DataError> {
         match self.runtime_buffer_provider.as_mut() {
-            None => {
-                self.load_segmenter_models(alloc::vec![provider], mode);
-            }
+            None => self.load_segmenter_models(alloc::vec![provider], mode),
             Some(buffer_provider) => {
                 let cur_mode = buffer_provider.segmenter_mode;
                 assert_eq!(
@@ -231,7 +227,7 @@ impl AnalysisDataSources {
                 );
 
                 buffer_provider.provider.push(provider);
-                self.reinitialize_segmenters();
+                self.reinitialize_segmenters()
             }
         }
     }
