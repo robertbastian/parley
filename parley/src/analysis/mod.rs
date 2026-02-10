@@ -95,67 +95,21 @@ pub(crate) enum SegmenterMode {
 
 pub(crate) struct AnalysisDataSources {
     word_segmenter: WordSegmenter,
-    line_segmenters: LineSegmenters,
+    line_segmenter_normal: LineSegmenter,
+    line_segmenter_keep_all: LineSegmenter,
+    line_segmenter_break_all: LineSegmenter,
     #[cfg(feature = "runtime-segmenter-data")]
     runtime_buffer_provider: Option<RuntimeBufferProvider>,
 }
 
-#[derive(Default)]
-struct LineSegmenters {
-    normal: Option<LineSegmenter>,
-    keep_all: Option<LineSegmenter>,
-    break_all: Option<LineSegmenter>,
-}
-
-impl LineSegmenters {
-    fn get(
-        &mut self,
-        word_break_strength: WordBreak,
-        #[cfg(feature = "runtime-segmenter-data")] runtime_buffer_provider: Option<
-            &RuntimeBufferProvider,
-        >,
-    ) -> LineSegmenterBorrowed<'_> {
-        let segmenter = match word_break_strength {
-            WordBreak::Normal => &mut self.normal,
-            WordBreak::KeepAll => &mut self.keep_all,
-            WordBreak::BreakAll => &mut self.break_all,
-        };
-
-        segmenter
-            .get_or_insert_with(|| {
-                let mut line_break_opts = LineBreakOptions::default();
-                let word_break_strength_icu = match word_break_strength {
-                    WordBreak::Normal => LineBreakWordOption::Normal,
-                    WordBreak::BreakAll => LineBreakWordOption::BreakAll,
-                    WordBreak::KeepAll => LineBreakWordOption::KeepAll,
-                };
-                line_break_opts.word_option = Some(word_break_strength_icu);
-
-                #[cfg(feature = "runtime-segmenter-data")]
-                if let Some(&RuntimeBufferProvider {
-                    ref provider,
-                    segmenter_mode,
-                }) = runtime_buffer_provider
-                {
-                    let combined = ForkByMarkerProvider::new(
-                        provider.as_deserializing(),
-                        &icu_segmenter::provider::Baked,
-                    );
-                    return match segmenter_mode {
-                        SegmenterMode::Auto => {
-                            LineSegmenter::try_new_auto_unstable(&combined, line_break_opts)
-                        }
-                        SegmenterMode::Dictionary => {
-                            LineSegmenter::try_new_dictionary_unstable(&combined, line_break_opts)
-                        }
-                    }
-                    .expect("Failed to create LineSegmenter");
-                }
-
-                LineSegmenter::new_for_non_complex_scripts(line_break_opts).static_to_owned()
-            })
-            .as_borrowed()
-    }
+fn to_line_break_opts(wb: WordBreak) -> LineBreakOptions<'static> {
+    let mut line_break_opts = LineBreakOptions::default();
+    line_break_opts.word_option = Some(match wb {
+        WordBreak::Normal => LineBreakWordOption::Normal,
+        WordBreak::BreakAll => LineBreakWordOption::BreakAll,
+        WordBreak::KeepAll => LineBreakWordOption::KeepAll,
+    });
+    line_break_opts
 }
 
 impl AnalysisDataSources {
@@ -165,14 +119,25 @@ impl AnalysisDataSources {
                 WordBreakInvariantOptions::default(),
             )
             .static_to_owned(),
-            line_segmenters: LineSegmenters::default(),
+            line_segmenter_normal: LineSegmenter::new_for_non_complex_scripts(to_line_break_opts(
+                WordBreak::Normal,
+            ))
+            .static_to_owned(),
+            line_segmenter_keep_all: LineSegmenter::new_for_non_complex_scripts(
+                to_line_break_opts(WordBreak::KeepAll),
+            )
+            .static_to_owned(),
+            line_segmenter_break_all: LineSegmenter::new_for_non_complex_scripts(
+                to_line_break_opts(WordBreak::BreakAll),
+            )
+            .static_to_owned(),
             #[cfg(feature = "runtime-segmenter-data")]
             runtime_buffer_provider: None,
         }
     }
 
     #[cfg(feature = "runtime-segmenter-data")]
-    fn reinitialize_word_segmenter(&mut self) {
+    fn reinitialize_segmenters(&mut self) {
         let Some(buffer_provider) = self.runtime_buffer_provider.as_ref() else {
             return;
         };
@@ -192,8 +157,41 @@ impl AnalysisDataSources {
         }
         .expect("Failed to create WordSegmenter with runtime models");
 
-        // Clear cached line segmenters; they will be lazily recreated with the new mode.
-        self.line_segmenters = LineSegmenters::default();
+        self.line_segmenter_normal = match buffer_provider.segmenter_mode {
+            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::Normal),
+            ),
+            SegmenterMode::Dictionary => LineSegmenter::try_new_lstm_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::Normal),
+            ),
+        }
+        .expect("Failed to create LineSegmenter with runtime models");
+
+        self.line_segmenter_keep_all = match buffer_provider.segmenter_mode {
+            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::KeepAll),
+            ),
+            SegmenterMode::Dictionary => LineSegmenter::try_new_lstm_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::KeepAll),
+            ),
+        }
+        .expect("Failed to create LineSegmenter with runtime models");
+
+        self.line_segmenter_break_all = match buffer_provider.segmenter_mode {
+            SegmenterMode::Auto => LineSegmenter::try_new_auto_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::BreakAll),
+            ),
+            SegmenterMode::Dictionary => LineSegmenter::try_new_lstm_unstable(
+                &combined,
+                to_line_break_opts(WordBreak::BreakAll),
+            ),
+        }
+        .expect("Failed to create LineSegmenter with runtime models");
     }
 
     #[cfg(feature = "runtime-segmenter-data")]
@@ -212,7 +210,7 @@ impl AnalysisDataSources {
         };
         self.runtime_buffer_provider = Some(buffer_provider);
 
-        self.reinitialize_word_segmenter();
+        self.reinitialize_segmenters();
     }
 
     #[cfg(feature = "runtime-segmenter-data")]
@@ -233,7 +231,7 @@ impl AnalysisDataSources {
                 );
 
                 buffer_provider.provider.push(provider);
-                self.reinitialize_word_segmenter();
+                self.reinitialize_segmenters();
             }
         }
     }
@@ -248,14 +246,10 @@ impl AnalysisDataSources {
         &mut self,
         word_break_strength: WordBreak,
     ) -> LineSegmenterBorrowed<'_> {
-        #[cfg(feature = "runtime-segmenter-data")]
-        {
-            self.line_segmenters
-                .get(word_break_strength, self.runtime_buffer_provider.as_ref())
-        }
-        #[cfg(not(feature = "runtime-segmenter-data"))]
-        {
-            self.line_segmenters.get(word_break_strength)
+        match word_break_strength {
+            WordBreak::Normal => self.line_segmenter_normal.as_borrowed(),
+            WordBreak::KeepAll => self.line_segmenter_keep_all.as_borrowed(),
+            WordBreak::BreakAll => self.line_segmenter_break_all.as_borrowed(),
         }
     }
 
